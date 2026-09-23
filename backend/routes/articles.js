@@ -1,6 +1,7 @@
 const express = require('express');
 const { getDb } = require('../db/init');
 const { authenticateToken } = require('../middleware/auth');
+const { serializeTags, parseTags } = require('../utils/tags');
 
 const router = express.Router();
 
@@ -19,9 +20,12 @@ router.get('/', (req, res) => {
   let whereClauses = [];
 
   if (tag) {
-    whereClauses.push(`',' || tags || ',' LIKE ?`);
-    params.push(`%,${tag},%`);
-    countParams.push(`%,${tag},%`);
+    // Tags are stored in canonical comma-joined form, so wrap both sides
+    // with commas for an exact match; escape LIKE wildcards in the tag itself.
+    whereClauses.push(`',' || tags || ',' LIKE ? ESCAPE '\\'`);
+    const escapedTag = String(tag).replace(/[\\%_]/g, ch => `\\${ch}`);
+    params.push(`%,${escapedTag},%`);
+    countParams.push(`%,${escapedTag},%`);
   }
 
   if (search) {
@@ -43,7 +47,7 @@ router.get('/', (req, res) => {
 
     const parsedArticles = articles.map(article => ({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     }));
 
     res.json({
@@ -75,7 +79,7 @@ router.get('/:id', (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -92,8 +96,12 @@ router.post('/', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Title and body are required' });
   }
 
+  const tagsStr = serializeTags(tags);
+  if (tagsStr === null) {
+    return res.status(400).json({ error: 'Invalid tags: must be an array of strings or a comma-separated string' });
+  }
+
   try {
-    const tagsStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
     const now = new Date().toISOString();
 
     const result = db.prepare(`
@@ -105,7 +113,7 @@ router.post('/', authenticateToken, (req, res) => {
 
     res.status(201).json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -123,13 +131,17 @@ router.put('/:id', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Title and body are required' });
   }
 
+  const tagsStr = serializeTags(tags);
+  if (tagsStr === null) {
+    return res.status(400).json({ error: 'Invalid tags: must be an array of strings or a comma-separated string' });
+  }
+
   try {
     const existing = db.prepare('SELECT * FROM articles WHERE id = ?').get(id);
     if (!existing) {
       return res.status(404).json({ error: 'Article not found' });
     }
 
-    const tagsStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
     const now = new Date().toISOString();
 
     db.prepare(`
@@ -141,7 +153,7 @@ router.put('/:id', authenticateToken, (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -173,16 +185,11 @@ function getTags(req, res) {
   const db = getDb();
 
   try {
-    const articles = db.prepare('SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ""').all();
+    const articles = db.prepare("SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ''").all();
     const tagSet = new Set();
 
     articles.forEach(article => {
-      if (article.tags) {
-        article.tags.split(',').forEach(tag => {
-          const trimmed = tag.trim();
-          if (trimmed) tagSet.add(trimmed);
-        });
-      }
+      parseTags(article.tags).forEach(tag => tagSet.add(tag));
     });
 
     const tags = Array.from(tagSet).sort();

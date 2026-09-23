@@ -33,7 +33,7 @@
       <el-form-item label="标签" prop="tags">
         <el-input
           v-model="form.tagsInput"
-          placeholder="请输入标签，用逗号分隔"
+          placeholder="请输入标签，用逗号（, 或 ，）分隔"
         />
       </el-form-item>
       
@@ -63,6 +63,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 import api from '../../api'
+import { parseTagsInput } from '../../utils/tags'
 
 const route = useRoute()
 const router = useRouter()
@@ -133,11 +134,9 @@ async function handleSave() {
     
     saving.value = true
     try {
-      // Parse tags from comma-separated input
-      const tags = form.tagsInput
-        .split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0)
+      // Parse tags with the same canonical rule the backend applies,
+      // so what the user types round-trips identically through save/read.
+      const tags = parseTagsInput(form.tagsInput)
       
       const articleData = {
         title: form.title,
