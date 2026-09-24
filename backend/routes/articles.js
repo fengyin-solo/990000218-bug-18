@@ -1,6 +1,12 @@
 const express = require('express');
 const { getDb } = require('../db/init');
 const { authenticateToken } = require('../middleware/auth');
+const {
+  InvalidTagsError,
+  parseTags,
+  serializeTags,
+  escapeLike
+} = require('../utils/tags');
 
 const router = express.Router();
 
@@ -9,7 +15,9 @@ router.get('/', (req, res) => {
   const db = getDb();
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
-  const tag = req.query.tag || null;
+  // Same normalization the write side uses, so filtering by an
+  // untrimmed/duplicate tag matches the canonical stored value.
+  const tag = req.query.tag ? parseTags(req.query.tag)[0] : null;
   const search = req.query.search || null;
   const offset = (page - 1) * limit;
 
@@ -19,9 +27,10 @@ router.get('/', (req, res) => {
   let whereClauses = [];
 
   if (tag) {
-    whereClauses.push(`',' || tags || ',' LIKE ?`);
-    params.push(`%,${tag},%`);
-    countParams.push(`%,${tag},%`);
+    whereClauses.push(`',' || tags || ',' LIKE ? ESCAPE '\\'`);
+    const tagPattern = `%,${escapeLike(tag)},%`;
+    params.push(tagPattern);
+    countParams.push(tagPattern);
   }
 
   if (search) {
@@ -43,7 +52,7 @@ router.get('/', (req, res) => {
 
     const parsedArticles = articles.map(article => ({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     }));
 
     res.json({
@@ -75,7 +84,7 @@ router.get('/:id', (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -92,8 +101,17 @@ router.post('/', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Title and body are required' });
   }
 
+  let tagsStr;
   try {
-    const tagsStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+    tagsStr = serializeTags(tags);
+  } catch (err) {
+    if (err instanceof InvalidTagsError) {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  try {
     const now = new Date().toISOString();
 
     const result = db.prepare(`
@@ -105,7 +123,7 @@ router.post('/', authenticateToken, (req, res) => {
 
     res.status(201).json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -123,13 +141,22 @@ router.put('/:id', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Title and body are required' });
   }
 
+  let tagsStr;
+  try {
+    tagsStr = serializeTags(tags);
+  } catch (err) {
+    if (err instanceof InvalidTagsError) {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
   try {
     const existing = db.prepare('SELECT * FROM articles WHERE id = ?').get(id);
     if (!existing) {
       return res.status(404).json({ error: 'Article not found' });
     }
 
-    const tagsStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
     const now = new Date().toISOString();
 
     db.prepare(`
@@ -141,7 +168,7 @@ router.put('/:id', authenticateToken, (req, res) => {
 
     res.json({
       ...article,
-      tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
+      tags: parseTags(article.tags)
     });
   } catch (err) {
     console.error(err);
@@ -173,16 +200,11 @@ function getTags(req, res) {
   const db = getDb();
 
   try {
-    const articles = db.prepare('SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ""').all();
+    const articles = db.prepare("SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ''").all();
     const tagSet = new Set();
 
     articles.forEach(article => {
-      if (article.tags) {
-        article.tags.split(',').forEach(tag => {
-          const trimmed = tag.trim();
-          if (trimmed) tagSet.add(trimmed);
-        });
-      }
+      parseTags(article.tags).forEach(tag => tagSet.add(tag));
     });
 
     const tags = Array.from(tagSet).sort();

@@ -101,6 +101,20 @@ const renderedContent = computed(() => {
   return marked(form.body)
 })
 
+// Canonical tag rule, identical to the backend:
+// split on commas, trim, drop empty entries, drop duplicates (first wins).
+function parseTagsInput(value) {
+  const seen = new Set()
+  return (value || '')
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(tag => {
+      if (tag.length === 0 || seen.has(tag)) return false
+      seen.add(tag)
+      return true
+    })
+}
+
 onMounted(() => {
   if (isEdit.value) {
     fetchArticle()
@@ -134,10 +148,7 @@ async function handleSave() {
     saving.value = true
     try {
       // Parse tags from comma-separated input
-      const tags = form.tagsInput
-        .split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0)
+      const tags = parseTagsInput(form.tagsInput)
       
       const articleData = {
         title: form.title,
